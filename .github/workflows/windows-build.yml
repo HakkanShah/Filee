@@ -1,0 +1,65 @@
+# Builds the Windows app on demand: Filee-<version>-win-Setup.exe, the portable zip and their checksums.
+# Run it from the Actions tab ("Run workflow"); the files appear as an artifact on the run.
+#
+# Same steps the release workflow uses (build/build-installer.ps1), without the tag, the tests and the
+# Linux/macOS packages.
+name: Windows build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version stamped on the build (empty uses Directory.Build.props)'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Version
+        id: version
+        shell: pwsh
+        env:
+          # Through the environment, so the input is never pasted into the script.
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = "$env:INPUT_VERSION".Trim().TrimStart('v', 'V')
+          if (-not $version) {
+            $version = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version |
+              Where-Object { $_ } | Select-Object -First 1
+          }
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      # Release builds embed the Noto fonts.
+      - name: Fonts
+        shell: pwsh
+        run: ./build/fetch-fonts.ps1
+
+      # The Explorer menu extension is built from C with a pinned Zig toolchain (~100 MB): cached between runs.
+      - name: Zig toolchain
+        uses: actions/cache@v4
+        with:
+          path: build/.cache/zig-x86_64-windows-0.16.0
+          key: zig-0.16.0-x86_64-windows
+
+      - name: Build installer and portable zip
+        shell: pwsh
+        run: ./build/build-installer.ps1 -Version ${{ steps.version.outputs.value }} -Portable
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Filee-${{ steps.version.outputs.value }}-windows
+          path: Releases/
+          if-no-files-found: error
